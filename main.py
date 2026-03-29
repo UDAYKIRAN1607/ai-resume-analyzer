@@ -1,3 +1,4 @@
+from http import client
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 import PyPDF2
@@ -6,8 +7,13 @@ import os
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+import chromadb
+from chromadb.utils import embedding_functions
+
 
 load_dotenv()
+
 app = FastAPI()
 
 app.add_middleware(
@@ -49,6 +55,55 @@ Summary: [one line summary]
 
 chain = prompt | llm
 
+def extract_text_from_pdf(pdf_bytes: bytes) -> str:
+    pdf_reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
+    text = ""
+    for page in pdf_reader.pages:
+        text += page.extract_text()
+    return text
+
+def get_relevant_chunks(resume_text: str, job_description: str) -> str:
+    # Split resume text into smaller chunks
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=500,
+        chunk_overlap=50
+    )
+    chunks = splitter.split_text(resume_text)
+
+    # Initialize ChromaDB persistent client — saves to disk
+    client = chromadb.PersistentClient(path="./chroma_db")
+
+    # Use ChromaDB's built-in ONNX embedding function (no PyTorch needed)
+    ef = embedding_functions.DefaultEmbeddingFunction()
+
+    # Delete old collection to avoid duplicate ID errors on re-analysis
+    try:
+        client.delete_collection(name="resume_chunks")
+    except:
+        pass
+
+    # Create fresh collection with embedding function
+    collection = client.create_collection(
+        name="resume_chunks",
+        embedding_function=ef
+    )
+
+    # Add resume chunks to ChromaDB — embeddings generated automatically
+    collection.add(
+        documents=chunks,
+        ids=[f"chunk_{i}" for i in range(len(chunks))]
+    )
+
+    # Query ChromaDB with job description — semantic similarity search
+    results = collection.query(
+        query_texts=[job_description],
+        n_results=3
+    )
+
+    # Return top 3 most relevant chunks
+    relevant_text = "\n".join(results['documents'][0])
+    return relevant_text
+
 @app.get("/")
 def home():
     return {"message": "AI Resume Analyzer API is running!"}
@@ -60,15 +115,14 @@ async def analyze_resume(
 ):
     # Extract text from PDF
     pdf_bytes = await resume.read()
-    pdf_reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
-    
-    resume_text = ""
-    for page in pdf_reader.pages:
-        resume_text += page.extract_text()
+    resume_text = extract_text_from_pdf(pdf_bytes)
 
-    # Run AI analysis
+    # Get relevant chunks using RAG
+    relevant_text = get_relevant_chunks(resume_text, job_description)
+
+    # Run AI analysis with relevant chunks
     result = chain.invoke({
-        "resume": resume_text[:3000],
+        "resume": relevant_text,
         "job_description": job_description
     })
 
