@@ -1,5 +1,6 @@
 from http import client
 from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import PyPDF2
 import io
@@ -130,3 +131,32 @@ async def analyze_resume(
         "analysis": result.content,
         "message": "Analysis complete!"
     }
+
+@app.post("/analyze-stream")
+async def analyze_resume_stream(
+    resume: UploadFile = File(...),
+    job_description: str = Form(...)
+):
+    # Extract text from PDF
+    pdf_bytes = await resume.read()
+    resume_text = extract_text_from_pdf(pdf_bytes)
+
+    # Get relevant chunks using RAG
+    relevant_text = get_relevant_chunks(resume_text, job_description)
+
+    # Stream response from Groq token by token
+    async def generate():
+        stream = llm.stream(
+            prompt.format(
+                resume=relevant_text,
+                job_description=job_description
+            )
+        )
+        for chunk in stream:
+            if chunk.content:
+                yield chunk.content
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/plain"
+    )
