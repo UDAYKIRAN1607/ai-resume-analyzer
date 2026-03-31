@@ -135,7 +135,7 @@ export default function App() {
     formData.append('job_description', jobDescription)
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/analyze-stream', {
+      const response = await fetch('https://ai-resume-analyzer-2a4y.onrender.com/analyze-stream', {
         method: 'POST',
         body: formData,
       })
